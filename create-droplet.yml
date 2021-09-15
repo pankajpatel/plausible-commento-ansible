@@ -1,0 +1,202 @@
+---
+- hosts: all
+  connection: local
+  become: no
+  gather_facts: true
+
+  tasks:
+    - name: Include Variables for project
+      include_vars:
+        dir: vars
+        files_matching: all-variables.prod.yml
+
+    - name: Create ssh key
+      community.digitalocean.digital_ocean_sshkey:
+        oauth_token: "{{ do_oauth_token }}"
+        name: mykey
+        ssh_pub_key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+        state: present
+      register: result
+
+    - debug:
+        msg: "SSH Key ID is {{result.data.ssh_key.id}}"
+
+    - name: Create a new droplet
+      community.digitalocean.digital_ocean_droplet:
+        state: present
+        name: "{{ droplet_name }}"
+        oauth_token: "{{ do_oauth_token }}"
+        size: "{{ droplet_size_id }}"
+        region: "{{ droplet_region_id }}"
+        image: "{{ droplet_image_id }}"
+        wait_timeout: 500
+        ssh_keys: [ "{{result.data.ssh_key.id}}" ]
+      register: my_droplet
+
+    - debug:
+        msg: "ID is {{ my_droplet.data.droplet.id }}, IP is {{ my_droplet.data.ip_address }}"
+
+    - name: Ensure a droplet is present
+      community.digitalocean.digital_ocean_droplet:
+        state: present
+        id: "{{ my_droplet.data.droplet.id }}"
+        name: "{{ droplet_name }}"
+        oauth_token: "{{ do_oauth_token }}"
+        size: "{{ droplet_size_id }}"
+        region: "{{ droplet_region_id }}"
+        image: "{{ droplet_image_id }}"
+        wait_timeout: 500
+
+    - name: Ensure a droplet is present with SSH keys installed
+      community.digitalocean.digital_ocean_droplet:
+        state: present
+        id: "{{ my_droplet.data.droplet.id }}"
+        name: "{{ droplet_name }}"
+        oauth_token: "{{ do_oauth_token }}"
+        size: "{{ droplet_size_id }}"
+        region: "{{ droplet_region_id }}"
+        image: "{{ droplet_image_id }}"
+        ssh_keys: [ "{{result.data.ssh_key.id}}" ]
+        wait_timeout: 500
+
+    - name: Create inventory in memory
+      add_host:
+        name: "{{ droplet_name }}"
+        groups: do_droplet_in_memory
+        ansible_ssh_host: "{{ my_droplet.data.ip_address }}"
+        ansible_ssh_user: root
+        ansible_ssh_private_key_file: "{{ do_ssh_private_key }}"
+      changed_when: false
+      tags: create_droplet
+
+    - name: Check if droplets inventory group exists in inventory file
+      shell: grep -x \[{{ droplets_inventory_group }}\] {{ ansible_inventory_file }}
+      register: inventory_group
+      tags: inventory_file
+      failed_when: inventory_group.rc == 2
+      changed_when: inventory_group.rc == 0
+      when: ansible_inventory_file|length > 0
+
+    - name: Add inventory group to inventory file
+      become: no
+      lineinfile:
+        dest: "{{ ansible_inventory_file }}"
+        line: "[{{ droplets_inventory_group }}]"
+        state: present
+      tags: inventory_file
+      when: ansible_inventory_file|length > 0 and inventory_group.rc == 1
+
+    - name: Add droplet to inventory file
+      become: no
+      lineinfile:
+        dest: "{{ ansible_inventory_file }}"
+        regexp: "{{ my_droplet.data.ip_address }}"
+        insertafter: ^\[{{ droplets_inventory_group }}\]
+        state: present
+        line: "{{ droplet_name }} ansible_host={{ my_droplet.data.ip_address }}"
+      delegate_to: localhost
+      when: ansible_inventory_file|length > 0
+      tags: inventory_file
+
+    - hosts: do_droplet_in_memory
+      name: Test Connection and Determine Remote User
+      gather_facts: false
+      roles:
+        - { role: connection, tags: [connection, always] }
+      vars:
+        - ansible_python_interpreter: /usr/bin/python3
+        - local_python_interpreter: "{{ ansible_playbook_python }}"
+    #####
+
+    # - name: Test Connection and Determine Remote User
+    #   gather_facts: false
+    #   vars:
+    #     - ansible_python_interpreter: /usr/bin/python3
+    #     - local_python_interpreter: "{{ ansible_playbook_python }}"
+
+    # # - hosts: do_droplet_in_memory
+    # #   gather_facts: no
+    # #   become: no
+    # #   roles:
+    # #     - { role: python-raw }
+
+    # - name: Get local machine's IP address
+    #   become: no
+    #   gather_facts: true
+    #   set_fact:
+    #     local_machine_ip: "{{ ansible_env['SSH_CLIENT'].split() | first }}"
+    #   changed_when: false
+    #   vars:
+    #     - ansible_python_interpreter: /usr/bin/python3
+
+    #####
+    #####
+
+
+    - name: Check whether Ansible can connect as root
+      command: ansible {{ inventory_hostname }} -m raw -a whoami -u root -vvvv
+      failed_when: false
+      changed_when: false
+      check_mode: no
+      register: connection_status
+      tags: [connection-tests]
+      delegate_to: localhost
+      vars:
+        - ansible_python_interpreter: "{{ local_python_interpreter }}"
+
+    - name: Set remote user
+      set_fact:
+        ansible_ssh_user: "{{ (users|first).username }}"
+      when: connection_status.rc != 0
+      check_mode: no
+
+    - name: Announce which user was selected
+      debug:
+        msg: "Note: Ansible will attempt connections as user = {{ ansible_ssh_user }}"
+
+    - name: Load become password
+      set_fact:
+        ansible_become_pass: "{{ user_acct_password }}"
+      when: ansible_user != 'root' | default(false) and ansible_become_pass is not defined
+      no_log: true
+
+      #####
+    
+    - name: Update apt
+      apt: update_cache=yes
+
+    - name: Install aptitude using apt
+      apt: name=aptitude state=latest update_cache=yes force_apt_get=yes
+
+    - name: Install required system packages
+      apt: name={{ item }} state=latest update_cache=yes
+      loop:
+        [
+          "apt-transport-https",
+          "build-essential",
+          "ca-certificates",
+          "curl",
+          "git",
+          "libssl-dev",
+          "software-properties-common",
+          "vim",
+        ]
+
+    - name: Add Docker GPG apt Key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker Repository
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu bionic stable
+        state: present
+
+    - name: Update apt and install docker-ce
+      apt: update_cache=yes name=docker-ce state=latest
+
+    - name: Ensure docker-compose is installed and available
+      get_url:
+        url: https://github.com/docker/compose/releases/download/{{ docker_compose_version }}/docker-compose-{{ ansible_system }}-{{ ansible_userspace_architecture }}
+        dest: /usr/local/bin/docker-compose
+        mode: "u=rwx,g=rx,o=rx"

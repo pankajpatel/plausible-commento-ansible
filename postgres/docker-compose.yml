@@ -1,0 +1,26 @@
+version: "3.3"
+
+services:
+  db:
+    image: postgres
+    environment:
+      POSTGRES_DB: YOUR_POSTGRES_DB
+      POSTGRES_USER: YOUR_POSTGRES_USER
+      POSTGRES_PASSWORD: YOUR_POSTGRES_PASSWORD
+    volumes:
+      - VOLUME_DIR/pg-data:/var/lib/postgresql/data
+    networks:
+      - web
+      - internal
+
+volumes:
+  db-data:
+    driver: local
+
+networks:
+  web:
+    external:
+      name: web
+  internal:
+    external:
+      name: internal

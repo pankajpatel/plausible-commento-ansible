@@ -1,0 +1,10 @@
+[t2h]
+XX.XX.XX.XX
+
+[servers]
+localhost
+
+[servers:vars]
+ansible_python_interpreter=/usr/bin/python3
+[web]
+

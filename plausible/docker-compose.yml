@@ -1,0 +1,78 @@
+version: "3.3"
+services:
+  mail:
+    image: bytemark/smtp
+    restart: always
+    environment:
+      RELAY_HOST: YOUR_SMTP_HOST_ADDR
+      RELAY_PORT: YOUR_SMTP_HOST_PORT
+      RELAY_USERNAME: YOUR_SMTP_USER_NAME
+      RELAY_PASSWORD: YOUR_SMTP_USER_PWD
+    networks:
+      - web
+      - internal
+
+  plausible_events_db:
+    image: yandex/clickhouse-server:21.3.2.5
+    volumes:
+      - VOLUME_DIR/event-data:/var/lib/clickhouse
+      - ./clickhouse/clickhouse-config.xml:/etc/clickhouse-server/config.d/logging.xml:ro
+      - ./clickhouse/clickhouse-user-config.xml:/etc/clickhouse-server/users.d/logging.xml:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - web
+      - internal
+
+  geoip:
+    image: maxmindinc/geoipupdate
+    environment:
+      - GEOIPUPDATE_EDITION_IDS=GeoLite2-Country
+      - GEOIPUPDATE_FREQUENCY=168 # update every 7 days
+      - GEOIPUPDATE_ACCOUNT_ID=YOUR_GEOIPUPDATE_ACCOUNT_ID
+      - GEOIPUPDATE_LICENSE_KEY=YOUR_GEOIPUPDATE_LICENSE_KEY
+    volumes:
+      - VOLUME_DIR/geoip:/usr/share/GeoIP
+
+  plausible:
+    image: plausible/analytics:latest
+    command: sh -c "sleep 10 && /entrypoint.sh db createdb && /entrypoint.sh db migrate && /entrypoint.sh db init-admin && /entrypoint.sh run"
+    depends_on:
+      - geoip
+      - plausible_events_db
+      - mail
+    ports:
+      - 8000:8000
+    env_file:
+      - VOLUME_DIR/plausible/plausible-conf.env
+    volumes:
+      - VOLUME_DIR/geoip:/geoip:ro
+    networks:
+      - web
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.analytics.entrypoints=http"
+      - "traefik.http.routers.analytics.rule=Host(`analytics.example.com`)"
+      - "traefik.http.middlewares.analytics-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.analytics.middlewares=analytics-https-redirect"
+      - "traefik.http.routers.analytics-secure.entrypoints=https"
+      - "traefik.http.routers.analytics-secure.rule=Host(`analytics.example.com`)"
+      - "traefik.http.routers.analytics-secure.tls=true"
+      - "traefik.http.routers.analytics-secure.service=analytics"
+      - "traefik.http.services.analytics.loadbalancer.server.port=8000"
+      - "traefik.docker.network=web"
+
+volumes:
+  event-data:
+    driver: local
+
+networks:
+  web:
+    external:
+      name: web
+  internal:
+    external:
+      name: internal

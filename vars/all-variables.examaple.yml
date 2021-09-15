@@ -1,0 +1,18 @@
+do_auth_token: "" # Your DO Auth Token
+domain: "t2h.app"
+email: "patel.pankaj@live.in"
+
+create_user: reaction
+copy_local_key: "{{ lookup('file', lookup('env','HOME') + '/.ssh/id_rsa.pub') }}"
+docker_compose_version: "1.25.4"
+nodejs_version: "12.x"
+proxy_dir: proxy
+proxy_path: "/home/{{ create_user }}/{{ proxy_dir }}"
+reaction_dir: reaction-store
+reaction_platform_path: "/home/{{create_user}}/{{reaction_dir}}"
+traefik_admin_user: reaction
+traefik_path: "/home/{{ create_user }}/{{ proxy_dir }}/traefik"
+traefik_http_user: "pankaj"
+traefik_http_pass: ""
+gh_user: "pankajpatel"
+gh_pass: "" # Your GH Personal Access Token

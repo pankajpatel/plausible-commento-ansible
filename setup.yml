@@ -1,0 +1,407 @@
+###########################################################################################################
+# Playbook: Initial Server Setup on a Ubuntu 18.4 Digital Ocean Droplet.
+# This playbook will also configure and docker-compose based deployment of the Reaction platform.
+###################################################################################################################
+
+---
+- hosts: "t2h"
+  remote_user: root
+  gather_facts: true
+
+  tasks:
+    - name: Include Variables for project
+      include_vars:
+        dir: vars
+        files_matching: all-variables.prod.yml
+        extensions:
+          - "json"
+          - "yml"
+
+    - name: "Ansible | Print create_user"
+      debug:
+        msg: "The create_user is {{ create_user }}"
+
+    - name: Make sure we have a 'wheel' group
+      group:
+        name: wheel
+        state: present
+
+    - name: Make sure we have a 'docker' group to facilitate running docker without sudo.
+      group:
+        name: docker
+        state: present
+
+    - name: Allow 'wheel' group to have password-less sudo
+      lineinfile:
+        path: /etc/sudoers
+        state: present
+        regexp: "^%wheel"
+        line: "%wheel ALL=(ALL) NOPASSWD: ALL"
+        validate: "/usr/sbin/visudo -cf %s"
+
+    - name: Create a new regular user with sudo privileges
+      user:
+        name: "{{ create_user }}"
+        state: present
+        groups: wheel, docker
+        append: true
+        create_home: true
+        shell: /bin/bash
+
+    - name: Set authorized key for remote user
+      authorized_key:
+        user: "{{ create_user }}"
+        state: present
+        key: "{{ copy_local_key }}"
+
+    - name: Disable password authentication for root
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        state: present
+        regexp: "^#?PermitRootLogin"
+        line: "PermitRootLogin prohibit-password"
+
+    - name: Update apt
+      apt: update_cache=yes
+
+    - name: Install aptitude using apt
+      apt: name=aptitude state=latest update_cache=yes force_apt_get=yes
+
+    - name: Install required system packages
+      apt: name={{ item }} state=latest update_cache=yes
+      loop:
+        [
+          "apt-transport-https",
+          "build-essential",
+          "ca-certificates",
+          "curl",
+          "git",
+          "libssl-dev",
+          "software-properties-common",
+          "vim",
+        ]
+
+    - name: Add Docker GPG apt Key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker Repository
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu bionic stable
+        state: present
+
+    - name: Update apt and install docker-ce
+      apt: update_cache=yes name=docker-ce state=latest
+
+    - name: Ensure docker-compose is installed and available
+      get_url:
+        url: https://github.com/docker/compose/releases/download/{{ docker_compose_version }}/docker-compose-{{ ansible_system }}-{{ ansible_userspace_architecture }}
+        dest: /usr/local/bin/docker-compose
+        mode: "u=rwx,g=rx,o=rx"
+  # Clone the repo
+    - git:
+        repo: "https://{{gh_user|urlencode()}}:{{gh_pass|urlencode()}}@github.com/{{gh_user}}/plausible-commento-ansible.git"
+        dest: "{{apps_dir}}"
+        version: main
+    
+  # BEGIN: Traefik Setup
+    - name: "Set DO Auth Token in Traefik's docker-compose.yml"
+      replace:
+        path: "{{traefik_path}}/docker-compose.yml"
+        regexp: "YOUR_DIGITALOCEAN_AUTH_TOKEN"
+        replace: "{{ do_auth_token }}"
+
+    - name: "Set config files path in Traefik's docker-compose.yml"
+      replace:
+        path: "{{traefik_path}}/docker-compose.yml"
+        regexp: "TRAEFIK_PATH"
+        replace: "{{traefik_path}}"
+
+    - name: "Set the desired domain in Traefik's docker-compose.yml"
+      replace:
+        path: "{{traefik_path}}/docker-compose.yml"
+        regexp: "example.com"
+        replace: "{{ domain }}"
+
+    - name: "Set the HTTP AUTH User in Traefik's config file"
+      replace:
+        path: "{{traefik_path}}/docker-compose.yml"
+        regexp: "TRAEFIK_HTTP_USER"
+        replace: "{{ traefik_http_user }}"
+
+    - name: "Set the HTTP AUTH Pass in Traefik's config file"
+      replace:
+        path: "{{traefik_path}}/docker-compose.yml"
+        regexp: "TRAEFIK_HTTP_PASS"
+        replace: "{{ traefik_http_pass }}"
+
+    - name: "Set the email in Traefik's config file"
+      replace:
+        path: "{{traefik_path}}/traefik.yml"
+        regexp: "YOUR_EMAIL"
+        replace: "{{ email }}"
+
+    - name: "Set the domain in Traefik's config file"
+      replace:
+        path: "{{traefik_path}}/traefik.yml"
+        regexp: "YOUR_DOMAIN"
+        replace: "{{ domain }}"
+
+    - name: "Set correct permissions on traefik.yml"
+      file:
+        path: "{{traefik_path}}/traefik.yml"
+        mode: "600"
+
+    - name: "Set correct permissions on acme.json"
+      file:
+        path: "{{traefik_path}}/acme.json"
+        mode: "600"
+
+    - name: "Start Traefik"
+      command: "docker-compose up -d"
+      args:
+        chdir: "{{traefik_path}}"
+  # END: Traefik Setup
+  
+  
+  # BEGIN: Postgres Setup
+    - name: Replace variables in Postgres docker-compose.yml
+      replace:
+        path: "{{ postgres.path }}/docker-compose.yml"
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+      loop:
+        - {
+            regexp: "YOUR_POSTGRES_DB",
+            replace: "{{ postgres.db_name }}"
+          }
+        - {
+            regexp: "YOUR_POSTGRES_USER",
+            replace: "{{ postgres.user }}"
+          }
+        - {
+            regexp: "YOUR_POSTGRES_PASSWORD",
+            replace: "{{ postgres.password }}"
+          }
+        - {
+            regexp: "VOLUME_DIR",
+            replace: "{{ volume_dir }}"
+          }
+    
+    - name: "Start Postgres"
+      command: "docker-compose up -d"
+      args:
+        chdir: "{{postgres.path}}"
+  # END: Postgres Setup
+
+  # BEGIN: Commento Setup
+    - name: Copy sample env file for Commento
+      copy:
+        src: "{{ commento.path }}/commento.env"
+        dest: "{{ volume_dir }}/commento/commento.env"
+        force: no
+    
+    - name: "Set env file path in Commento's docker-compose.yml"
+      replace:
+        path: "{{commento.path}}/docker-compose.yml"
+        regexp: "VOLUME_DIR"
+        replace: "{{ volume_dir }}/commento"
+    
+    - name: "Replace variables in Commento's docker-compose.yml"
+      replace:
+        path: "{{commento.path}}/docker-compose.yml"
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+      loop:
+        - {
+            regexp: "example.com",
+            replace: "{{ domain }}"
+          }
+
+    - name: Replace variables in Commento env
+      replace:
+        path: "{{ volume_dir }}/commento/commento.env"
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+      loop:
+        - {
+            regexp: "example.com",
+            replace: "{{ domain }}"
+          }
+        - {
+            regexp: "YOUR_COMMENTO_ORIGIN",
+            replace: "{{ commento.origin }}"
+          }
+        - {
+            regexp: "YOUR_COMMENTO_PORT",
+            replace: "{{ commento.port }}"
+          }
+        - {
+            regexp: "YOUR_POSTGRES_DB_URL",
+            replace: "{{ commento.db_url }}"
+          }
+        - {
+            regexp: "YOUR_AKISMET_KEY",
+            replace: "{{ commento.akismet_key }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_HOST",
+            replace: "{{ commento.smtp.host }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_PORT",
+            replace: "{{ commento.smtp.port }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_USERNAME",
+            replace: "{{ commento.smtp.username }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_PASSWORD",
+            replace: "{{ commento.smtp.password }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_FROM_ADDRESS",
+            replace: "{{ commento.smtp.address }}"
+          }
+        - {
+            regexp: "YOUR_GOOGLE_KEY",
+            replace: "{{ commento.google.key }}"
+          }
+        - {
+            regexp: "YOUR_GOOGLE_SECRET",
+            replace: "{{ commento.google.secret }}"
+          }
+        - {
+            regexp: "YOUR_GITHUB_KEY",
+            replace: "{{ commento.github.key }}"
+          }
+        - {
+            regexp: "YOUR_GITHUB_SECRET",
+            replace: "{{ commento.github.secret }}"
+          }
+        - {
+            regexp: "YOUR_TWITTER_KEY",
+            replace: "{{ commento.twitter.key }}"
+          }
+        - {
+            regexp: "YOUR_TWITTER_SECRET",
+            replace: "{{ commento.twitter.secret }}"
+          }
+
+    - name: "Start Commento"
+      command: "docker-compose up -d"
+      args:
+        chdir: "{{commento.path}}"
+  # END: Commento Setup
+
+  # BEGIN: Plausible Setup
+    - name: Copy sample env file for Plausible
+      copy:
+        src: "{{ plausible.path }}/plausible-conf.env"
+        dest: "{{ volume_dir }}/plausible/plausible-conf.env"
+        force: no
+    
+    - name: "Set env file path in Plausible's docker-compose.yml"
+      replace:
+        path: "{{plausible.path}}/docker-compose.yml"
+        regexp: "VOLUME_DIR"
+        replace: "{{ volume_dir }}"
+    
+    - name: "Replace variables in Plausible's docker-compose.yml"
+      replace:
+        path: "{{plausible.path}}/docker-compose.yml"
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+      loop:
+        - {
+            regexp: "example.com",
+            replace: "{{ domain }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_HOST_ADDR",
+            replace: "{{ plausible.smtp.host }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_HOST_PORT",
+            replace: "{{ plausible.smtp.port }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_USER_NAME",
+            replace: "{{ plausible.smtp.username }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_USER_PWD",
+            replace: "{{ plausible.smtp.password }}"
+          }
+        - {
+            regexp: "YOUR_GEOIPUPDATE_ACCOUNT_ID",
+            replace: "{{ plausible.geoip.account_id }}"
+          }
+        - {
+            regexp: "YOUR_GEOIPUPDATE_LICENSE_KEY",
+            replace: "{{ plausible.geoip.license_key }}"
+          }
+
+    - name: Replace variables in Plausible env
+      replace:
+        path: "{{ volume_dir }}/plausible/plausible-conf.env"
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+      loop:
+        - {
+            regexp: "example.com",
+            replace: "{{ domain }}"
+          }
+        - {
+            regexp: "VOLUME_DIR",
+            replace: "{{ volume_dir }}"
+          }
+        - {
+            regexp: "YOUR_ADMIN_USER_EMAIL",
+            replace: "{{ plausible.admin_user_email }}"
+          }
+        - {
+            regexp: "YOUR_ADMIN_USER_NAME",
+            replace: "{{ plausible.admin_user_name }}"
+          }
+        - {
+            regexp: "YOUR_ADMIN_USER_PWD",
+            replace: "{{ plausible.admin_user_pwd }}"
+          }
+        - {
+            regexp: "YOUR_BASE_URL",
+            replace: "{{ plausible.base_url }}"
+          }
+        - {
+            regexp: "YOUR_SECRET_KEY_BASE",
+            replace: "{{ plausible.secret_key_base }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_HOST_ADDR",
+            replace: "{{ plausible.smtp.host }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_HOST_PORT",
+            replace: "{{ plausible.smtp.port }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_USER_NAME",
+            replace: "{{ plausible.smtp.username }}"
+          }
+        - {
+            regexp: "YOUR_SMTP_USER_PWD",
+            replace: "{{ plausible.smtp.password }}"
+          }
+        - {
+            regexp: "YOUR_DATABASE_URL",
+            replace: "{{ plausible.db_url }}"
+          }
+
+    - name: "Start Plausible"
+      command: "docker-compose up -d"
+      args:
+        chdir: "{{plausible.path}}"
+  # END: Plausible Setup
+
