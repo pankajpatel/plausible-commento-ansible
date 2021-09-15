@@ -104,6 +104,15 @@
         repo: "https://{{gh_user|urlencode()}}:{{gh_pass|urlencode()}}@github.com/{{gh_user}}/plausible-commento-ansible.git"
         dest: "{{apps_path}}"
         version: main
+
+    - name: Login to GH Docker Registry
+      command: echo "{{ gh_pass }}" | docker login ghcr.io -u {{ gh_user }} --password-stdin
+    
+    - name: Create Docker network named web
+      command: docker network create web
+
+    - name: Create Docker network named internal
+      command: docker network create internal
     
   # BEGIN: Traefik Setup
     - name: "Set DO Auth Token in Traefik's docker-compose.yml"
