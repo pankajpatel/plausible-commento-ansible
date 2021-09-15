@@ -1,3 +1,4 @@
 pg-data
 *.log
 *prod*
+hosts
