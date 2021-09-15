@@ -207,7 +207,7 @@
   # BEGIN: Commento Setup
     - name: Copy sample env file for Commento
       copy:
-        remote_src: "{{ commento.path }}/commento.env"
+        src: "./commento/commento.env"
         dest: "{{ volume_dir }}/commento/commento.env"
         force: no
     
@@ -308,7 +308,7 @@
   # BEGIN: Plausible Setup
     - name: Copy sample env file for Plausible
       copy:
-        remote_src: "{{ plausible.path }}/plausible-conf.env"
+        src: "./plausible/plausible-conf.env"
         dest: "{{ volume_dir }}/plausible/plausible-conf.env"
         force: no
     
