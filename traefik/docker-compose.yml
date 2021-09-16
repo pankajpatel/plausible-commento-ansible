@@ -36,8 +36,6 @@ services:
       - "traefik.http.routers.traefik-secure.tls.certresolver=le"
       - "traefik.http.routers.traefik-secure.tls.domains[0].main=example.com"
       - "traefik.http.routers.traefik-secure.tls.domains[0].sans=*.example.com"
-      - "traefik.http.routers.traefik-secure.tls.domains[1].main=example1.com"
-      - "traefik.http.routers.traefik-secure.tls.domains[1].sans=*.example1.com"
       - "traefik.http.routers.traefik-secure.service=api@internal"
 
 networks:

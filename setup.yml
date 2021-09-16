@@ -272,7 +272,7 @@
           }
         - {
             regexp: "YOUR_SMTP_FROM_ADDRESS",
-            replace: "{{ commento.smtp.address }}"
+            replace: "{{ commento.smtp.from }}"
           }
         - {
             regexp: "YOUR_GOOGLE_KEY",
